@@ -44,4 +44,4 @@ for n_rand, n_fund, n_chart, n_univ, n_mm in tqdm(list(itertools.product(RANGE, 
                         'MarketMaker': n_mm, "AutoMarketMaker": is_amm})
         before.append(tmp['right before'])
         after.append(tmp['after'])
-        plot_price(info)
+        plot_price(info, spread=True) # цена, бид - аск спред
