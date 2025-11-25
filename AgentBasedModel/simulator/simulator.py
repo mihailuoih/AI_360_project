@@ -162,15 +162,23 @@ class SimulatorInfo:
         return rolling(r, roll) if roll else r
 
     def return_volatility(self, window: int = None) -> list or float:
+        returns = self.stock_returns(1)
+        if not returns:
+            return [] if window else 0.0
         if window is None:
-            return std(self.stock_returns())
-        n = len(self.stock_returns(1))
-        return [std(self.stock_returns(1)[i:i+window]) for i in range(n - window)]
+            return std(returns)
+        if window <= 0 or len(returns) < window:
+            return []
+        return [std(returns[i:i+window]) for i in range(len(returns) - window + 1)]
 
     def price_volatility(self, window: int = None) -> list or float:
+        if not self.prices:
+            return [] if window else 0.0
         if window is None:
             return std(self.prices)
-        return [std(self.prices[i:i+window]) for i in range(len(self.prices) - window)]
+        if window <= 0 or len(self.prices) < window:
+            return []
+        return [std(self.prices[i:i+window]) for i in range(len(self.prices) - window + 1)]
 
     def liquidity(self, roll: int = None) -> list or float:
         n = len(self.prices)

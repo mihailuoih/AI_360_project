@@ -195,6 +195,7 @@ class OrderList:
         # If empty
         if self.first is None:
             self.append(order)
+            return
 
         # Insert order in the beginning
         if order <= self.first:

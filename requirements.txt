@@ -4,3 +4,5 @@ numpy~=1.26.0
 statsmodels~=0.13.2
 scipy~=1.8.1
 seaborn~=0.11.2
+tqdm~=4.66.1
+pytest~=7.4.4

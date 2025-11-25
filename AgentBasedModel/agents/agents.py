@@ -1,6 +1,6 @@
 import random
 
-from math import floor
+from math import floor, ceil
 
 from AgentBasedModel.utils import Order, OrderList
 from AgentBasedModel.utils.math import exp, mean
@@ -562,16 +562,26 @@ class MarketMaker(Trader):
             self._cancel_order(order)
 
         spread = self.market.spread()
+        if spread is None:
+            return
 
         # Calculate bid and ask volume
         bid_volume = max(0., self.ul - 1 - self.assets)
         ask_volume = max(0., self.assets - self.ll - 1)
 
         # If in panic state we only either sell or buy commodities
-        if not bid_volume or not ask_volume:
+        if bid_volume <= 0 or ask_volume <= 0:
             self.panic = True
-            self._buy_market((self.ul + self.ll) / 2 - self.assets) if ask_volume is None else None
-            self._sell_market(self.assets - (self.ul + self.ll) / 2) if bid_volume is None else None
+            mid_inventory = (self.ul + self.ll) / 2
+            if ask_volume <= 0:
+                need = mid_inventory - self.assets
+                if need > 0:
+                    self._buy_market(need)
+            if bid_volume <= 0:
+                excess = self.assets - mid_inventory
+                if excess > 0:
+                    self._sell_market(excess)
+            return
         else:
             self.panic = False
             base_offset = -((spread['ask'] - spread['bid']) * (self.assets / self.softlimit))  # Price offset
@@ -584,6 +594,11 @@ class AutoMarketMaker(Trader):
     spread between bid and ask prices, and maintain its assets to cash ratio in balance.
     """
 
+    MAX_LIMIT_BUY = 100
+    MAX_LIMIT_SELL = 200
+    MAX_TRADE_FRACTION = 0.1  # доля запасов, доступная для рыночных действий за шаг
+    LIMIT_FRACTION = 0.2      # доля запасов, распределяемая по сетке лимиток
+
     def __init__(self, market: ExchangeAgent, cash: float, assets: int = 0, initial_ratio: float = 0.5):
         super().__init__(market, cash, assets)
         self.type = 'Automated Market Maker'
@@ -592,43 +607,39 @@ class AutoMarketMaker(Trader):
         if not (0 < initial_ratio < 1):
             raise ValueError(f'Wrong initial ratio type! Ratio: {self.initial_ratio}')
 
-    def filling_amount_bid(self, price, qty):
-        # self._sell_market(filled_amount_bid)
+    def _inner_price(self) -> float:
+        """
+        Internal valuation proxy. If reserves are empty, fall back to current spread midpoint
+        to avoid division-by-zero explosions.
+        """
+        if self.assets > 0:
+            return self.cash / self.assets
+        spread = self.market.spread()
+        if spread:
+            return (spread['ask'] + spread['bid']) / 2
+        return max(self.cash, 1.0)
 
-        inner_price = self.cash / self.assets # (RU_comment for me) в некотором смысле - то,
-        # насколько мы оцениваем ценность актива. Если оценочная стоимость ниже, чем цена в книге заявок, то нам выгодно
-        # продавать, а если выше - то покупать.
+    def filling_amount_bid(self, price, qty):
+        if self.assets <= 0 or self.cash <= 0:
+            return 0
+
+        inner_price = self._inner_price()
         if price <= inner_price:
             return 0
 
-        # (self.assets - k)(self.cash + k * price) = self.assets * self.cash
-        # (a-k)(c+kp) = ac
-        # ac + kap - kc - k^2 p = ac
-        # k^2 p = k(ap - c)
-        # k p = ap - c
-        # k = (ap - c) / p = a - c / p
         k = self.assets - self.cash / price
-        #alpha = (self.assets - k) * (self.cash + k * price)
-        #beta = self.assets * self.cash
-        return floor(min(k, qty))
+        return max(0, floor(min(k, qty)))
 
     def filling_amount_ask(self, price, qty):
-        # self._buy_market(filled_amount_ask)
+        if self.cash <= 0:
+            return 0
 
-        inner_price = self.cash / self.assets
+        inner_price = self._inner_price()
         if price >= inner_price:
             return 0
 
-        # (self.assets + k)(self.cash - k * price) = self.assets * self.cash
-        # (a+k)(c-kp) = ac
-        # ac - kap + kc - k^2 p = ac
-        # -kap + kc = k^2 p
-        # kp = c - ap
-        # k = c/p - a
         k = self.cash / price - self.assets
-        #alpha = (self.assets + k) * (self.cash - k * price)
-        #beta = self.assets * self.cash
-        return floor(min(k, qty))
+        return max(0, floor(min(k, qty)))
 
     def get_price_to_sell_in_limit_order(self, i):
         return (self.cash * self.assets) / ((self.assets - i)**2)
@@ -641,49 +652,63 @@ class AutoMarketMaker(Trader):
         for order in self.orders.copy():
             self._cancel_order(order)
 
-        # Trying to buy an asset in the initial ratio
+        # 1) Начальная балансировка до целевого отношения
         if self.cash_to_buy > 0:
-            while self.market.get_best_ask():
-                data = self.market.get_best_ask()
-                price, qty = data['price'], data['qty']
-                if price * qty <= self.cash_to_buy: # (RU_comment for me) Я тут не учитываю пока комиссию.
-                    # Но она не учитывается и ни у каких других агентов
-                    self._buy_market(qty)
-                    self.cash_to_buy -= price * qty
-                else:
-                    part = (self.cash_to_buy / (price * qty)) * qty
-                    self._buy_market(part)
-                    self.cash_to_buy = 0
-                    break
+            spend_cap = min(self.cash_to_buy, self.cash * self.MAX_TRADE_FRACTION)
+            best_ask = self.market.get_best_ask()
+            if best_ask and best_ask['price'] > 0 and spend_cap > 0:
+                affordable_qty = min(best_ask['qty'], spend_cap / best_ask['price'])
+                if affordable_qty > 0:
+                    cash_before = self.cash
+                    unfilled = self._buy_market(affordable_qty)
+                    spent = cash_before - self.cash
+                    self.cash_to_buy = max(0.0, self.cash_to_buy - spent)
             if self.cash_to_buy > 0:
                 return
 
-        while True:
-            bid = self.market.get_best_bid()
-            ask = self.market.get_best_ask()
+        # 2) Одноразовая рыночная подстройка к книге заявок
+        bid = self.market.get_best_bid()
+        ask = self.market.get_best_ask()
 
-            filled_amount_bid = 0
-            if bid:
-                filled_amount_bid = self.filling_amount_bid(**bid)
+        max_sell_volume = max(0.0, min(self.assets, self.assets * self.MAX_TRADE_FRACTION))
+        max_buy_volume = 0.0
+        if ask and ask['price'] > 0:
+            max_buy_volume = max(0.0, min(self.cash / ask['price'], (self.cash / ask['price']) * self.MAX_TRADE_FRACTION))
 
-            filled_amount_ask = 0
-            if ask:
-                filled_amount_ask = self.filling_amount_ask(**ask)
+        if bid:
+            to_sell = min(self.filling_amount_bid(**bid), max_sell_volume)
+            if to_sell > 0:
+                self._sell_market(to_sell)
 
-            if filled_amount_bid == 0 and filled_amount_ask == 0:
-                return
+        if ask:
+            to_buy = min(self.filling_amount_ask(**ask), max_buy_volume)
+            if to_buy > 0:
+                self._buy_market(to_buy)
 
-            self._buy_market(filled_amount_ask)
-            self._sell_market(filled_amount_bid)
+        # 3) Размещение ограниченной сетки лимитных ордеров
+        prices_sell: list[float] = []
+        allowed_sell_orders = min(self.MAX_LIMIT_SELL, max(1, int(self.assets * self.LIMIT_FRACTION)))
+        for i in range(1, allowed_sell_orders + 1):
+            prices_sell.append(ceil(self.get_price_to_sell_in_limit_order(i) * 10) / 10)
 
-        prices_sell = []
-        for i in range(1, self.assets):
-            prices.append(ceil(get_price_to_sell_in_limit_order(i) * 10) / 10)
+        prices_buy: list[float] = []
+        ref_price = None
+        if ask:
+            ref_price = ask['price']
+        elif bid:
+            ref_price = bid['price']
+        else:
+            try:
+                ref_price = self.market.price()
+            except Exception:
+                ref_price = 1.0
+        if ref_price <= 0:
+            ref_price = 1.0
 
-        MAX_LIMIT_BUY = 100
-        prices_buy = []
-        for i in range(1, MAX_LIMIT_BUY):
-            prices_buy.append(floor(get_price_to_buy_in_limit_order(i) * 10) / 10)
+        virtual_inventory = max(0.0, min(self.cash / ref_price, self.cash / ref_price))
+        allowed_buy_orders = min(self.MAX_LIMIT_BUY, max(1, int(virtual_inventory * self.LIMIT_FRACTION)))
+        for i in range(1, allowed_buy_orders + 1):
+            prices_buy.append(floor(self.get_price_to_buy_in_limit_order(i) * 10) / 10)
 
         for p in prices_sell:
             self._sell_limit(1, p)

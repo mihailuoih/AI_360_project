@@ -1,7 +1,9 @@
 from AgentBasedModel.simulator import Simulator
-from AgentBasedModel.agents import Trader, Universalist, Fundamentalist, MarketMaker
+from AgentBasedModel.agents import Trader, Universalist, Fundamentalist, MarketMaker, AutoMarketMaker, Chartist, Random
 from AgentBasedModel.utils.orders import Order
 from itertools import chain
+import random
+import math
 
 
 class Event:
@@ -41,6 +43,23 @@ class FundamentalPriceShock(Event):
         self.simulator.exchange.dividend_book = [div + self.dp * r for div in divs]
 
 
+class FundamentalPriceShockRelative(Event):
+    def __init__(self, it: int, fraction: float):
+        super().__init__(it)
+        self.fraction = fraction
+
+    def __repr__(self):
+        pct = round(self.fraction * 100, 2)
+        return f'fundamental price shock relative (it={self.it}, pct={pct}%)'
+
+    def call(self, it: int):
+        if super().call(it):
+            return
+        multiplier = max(0.0, 1.0 + self.fraction)
+        divs = self.simulator.exchange.dividend_book
+        self.simulator.exchange.dividend_book = [max(div * multiplier, 0.0) for div in divs]
+
+
 class MarketPriceShock(Event):
     def __init__(self, it: int, price_change: float):
         super().__init__(it)
@@ -76,6 +95,53 @@ class LiquidityShock(Event):
         else:  # sell
             order = Order(exchange.order_book['bid'].last.price, abs(self.dv), 'ask', pseudo_trader)
         exchange.market_order(order)
+
+
+class AgentExitShock(Event):
+    def __init__(self, it: int, fraction: float):
+        super().__init__(it)
+        self.fraction = max(0.0, min(1.0, fraction))
+
+    def __repr__(self):
+        pct = round(self.fraction * 100, 1)
+        return f'agent exit shock (it={self.it}, fraction={pct}%)'
+
+    def call(self, it: int):
+        if super().call(it):
+            return
+
+        if not self.simulator.traders:
+            return
+
+        victims = set()
+        eligible = [
+            trader for trader in self.simulator.traders
+            if not isinstance(trader, (MarketMaker, AutoMarketMaker))
+        ]
+        if not eligible or self.fraction <= 0:
+            return
+
+        # Группируем по типу, чтобы удалять долю равномерно.
+        groups = {}
+        for trader in eligible:
+            groups.setdefault(type(trader), []).append(trader)
+
+        for traders in groups.values():
+            if not traders:
+                continue
+            n_remove = max(0, math.ceil(len(traders) * self.fraction))
+            random.shuffle(traders)
+            for trader in traders[:n_remove]:
+                victims.add(trader)
+
+        if not victims:
+            return
+
+        for trader in victims:
+            for order in list(trader.orders):
+                trader._cancel_order(order)
+
+        self.simulator.traders = [trader for trader in self.simulator.traders if trader not in victims]
 
 
 class InformationShock(Event):

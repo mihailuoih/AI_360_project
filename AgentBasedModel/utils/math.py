@@ -16,13 +16,17 @@ def std(x: list) -> float:
 
 
 def rolling(x: list, n) -> list:
+    if n is None or n <= 0 or len(x) < n:
+        return []
+
     if None not in x:
         return [mean(x[i:i+n]) for i in range(len(x) - n + 1)]
-    else:
-        res = list()
-        for i in range(len(x) - n):
-            xs = [el for el in x[i:i+n] if el is not None]
-            res.append(mean(xs)) if xs else res.append(None)
+
+    res = list()
+    for i in range(len(x) - n + 1):
+        xs = [el for el in x[i:i+n] if el is not None]
+        res.append(mean(xs) if xs else None)
+    return res
 
 
 def difference(x: list) -> list:

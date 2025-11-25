@@ -1,0 +1,61 @@
+{
+  "iterations": 600,
+  "agent_cash": 1000,
+  "agent_assets": 0,
+  "exchange": {
+    "price": 100,
+    "std": 25,
+    "volume": 1000,
+    "rf": 0.0005,
+    "transaction_cost": 0.0
+  },
+  "agent_presets": [
+    {
+      "id": "baseline",
+      "description": "Равномерное распределение типов трейдеров",
+      "agents": {
+        "Random": 10,
+        "Fundamentalist": 10,
+        "Chartist": 10,
+        "Universalist": 10
+      }
+    }
+  ],
+  "price_shock": {
+    "t0": 200,
+    "min_percent": 1,
+    "switch_percent": 10,
+    "max_percent": 90,
+    "fine_step": 1,
+    "coarse_step": 5
+  },
+  "liquidity_shock": {
+    "t0": 250,
+    "fractions": [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9]
+  },
+  "save_plots": true,
+  "repeats": 1,
+  "base_seed": 123,
+  "panic": {
+    "short_window": 10,
+    "baseline_window": 60,
+    "threshold": 2.5,
+    "consec": 2
+  },
+  "shock_detection": {
+    "W_ref": 60,
+    "W_stab": 40,
+    "consec_ok": 3,
+    "conf": 0.95,
+    "slope_th": 0.01,
+    "vol_relax": 1.25,
+    "band_k_sigma": 2.0,
+    "ema_alpha": 0.2,
+    "max_horizon": 2000
+  },
+  "plots": [
+    {"type": "price", "kwargs": {"spread": true, "rolling": 5, "figsize": [10, 4]}},
+    {"type": "price_volatility", "kwargs": {"window": 20, "figsize": [10, 3]}},
+    {"type": "liquidity", "kwargs": {"rolling": 5, "figsize": [10, 3]}}
+  ]
+}
