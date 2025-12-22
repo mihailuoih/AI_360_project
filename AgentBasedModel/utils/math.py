@@ -1,4 +1,6 @@
 from math import exp
+import numpy as np
+from scipy import stats
 
 
 def mean(x: list) -> float:
@@ -47,3 +49,40 @@ def aggregate(types_arr: list, target_arr: list, labels) -> dict:
                 v = None
             data[k].append(v)
     return data
+
+
+def paired_ttest(sample_a, sample_b, alpha: float = 0.05) -> dict:
+    """
+    Парный t-тест: H0 о нулевой средней разности между sample_a и sample_b.
+    Игнорирует None/NaN, требует >= 2 наблюдений.
+    """
+    a = np.asarray(sample_a, dtype=float)
+    b = np.asarray(sample_b, dtype=float)
+    mask = ~(np.isnan(a) | np.isnan(b))
+    a = a[mask]
+    b = b[mask]
+    n = len(a)
+    if n < 2:
+        return {"n": n, "t_stat": None, "p_value": None, "mean_diff": None, "ci_low": None, "ci_high": None}
+
+    diff = a - b
+    mean_diff = float(np.mean(diff))
+    t_stat, p_value = stats.ttest_rel(a, b, nan_policy="omit")
+
+    se = stats.sem(diff, nan_policy="omit")
+    if np.isnan(se) or se == 0:
+        ci_low = ci_high = mean_diff
+    else:
+        t_crit = stats.t.ppf(1 - alpha / 2, df=n - 1)
+        margin = t_crit * se
+        ci_low = mean_diff - margin
+        ci_high = mean_diff + margin
+
+    return {
+        "n": n,
+        "t_stat": float(t_stat),
+        "p_value": float(p_value),
+        "mean_diff": mean_diff,
+        "ci_low": float(ci_low),
+        "ci_high": float(ci_high),
+    }

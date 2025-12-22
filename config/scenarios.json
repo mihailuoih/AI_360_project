@@ -23,18 +23,18 @@
   ],
   "price_shock": {
     "t0": 200,
-    "min_percent": 1,
+    "min_percent": 10,
     "switch_percent": 10,
-    "max_percent": 90,
+    "max_percent": 10,
     "fine_step": 1,
-    "coarse_step": 5
+    "coarse_step": 1
   },
   "liquidity_shock": {
     "t0": 250,
-    "fractions": [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9]
+    "fractions": []
   },
-  "save_plots": true,
-  "repeats": 1,
+  "save_plots": false,
+  "repeats": 10000,
   "base_seed": 123,
   "panic": {
     "short_window": 10,

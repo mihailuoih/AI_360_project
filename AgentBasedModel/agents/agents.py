@@ -4,6 +4,9 @@ from math import floor, ceil
 
 from AgentBasedModel.utils import Order, OrderList
 from AgentBasedModel.utils.math import exp, mean
+import math
+import copy
+from AgentBasedModel.utils.pools import BasePool, ConstantProductPool, HFPool
 
 
 class ExchangeAgent:
@@ -588,7 +591,87 @@ class MarketMaker(Trader):
             self._buy_limit(bid_volume, spread['bid'] - base_offset - .1)  # BID
             self._sell_limit(ask_volume, spread['ask'] + base_offset + .1)  # ASK
 
-class AutoMarketMaker(Trader):
+
+class BaseAMMAgent(Trader):
+    """
+    Общая логика для AMM-агентов: хранит ссылку на пул-инвариант и утилиты для расчета сеток цен.
+    """
+
+    def __init__(self, market: ExchangeAgent, cash: float, assets: int, pool_cls, pool_kwargs=None):
+        super().__init__(market, cash, assets)
+        self.pool_cls = pool_cls
+        self.pool_kwargs = pool_kwargs or {}
+        self.pool = self.pool_cls(self.assets, self.cash, **self.pool_kwargs)
+
+    def _sync_pool(self):
+        """Синхронизировать математический пул с фактическими запасами агента."""
+        self.pool.x = float(self.assets)
+        self.pool.y = float(self.cash)
+
+    def _clone_pool(self):
+        """Сделать копию пула для симуляции ценовой сетки."""
+        cloned_kwargs = copy.deepcopy(self.pool_kwargs)
+        clone = self.pool_cls(self.pool.x, self.pool.y, **cloned_kwargs)
+        return clone
+
+    @staticmethod
+    def _dy_for_dx(pool: BasePool, dx_target: float, tol: float = 1e-6) -> float:
+        """
+        Сколько cash (dy) нужно занести в пул, чтобы забрать dx_target базового актива.
+        Ищется двоичным поиском по quote_in.
+        """
+        if dx_target <= 0:
+            return 0.0
+
+        # начальное верхнее ограничение — удваиваем, пока не хватит
+        hi = max(pool.y * 0.1, 1.0)
+        while pool.quote_in(hi) < dx_target:
+            hi *= 2
+            if hi > pool.y * 1e6 + 1:
+                return 0.0
+        lo = 0.0
+        for _ in range(60):
+            mid = (lo + hi) / 2
+            dx = pool.quote_in(mid)
+            if abs(dx - dx_target) <= tol:
+                return mid
+            if dx < dx_target:
+                lo = mid
+            else:
+                hi = mid
+        return hi
+
+    def _price_grid_sell(self, max_orders: int, unit: float = 1.0) -> list[float]:
+        """
+        Сетка цен на продажу базового актива размером unit, посчитанная вдоль инварианта.
+        """
+        tmp = self._clone_pool()
+        prices = []
+        for _ in range(max_orders):
+            dy = tmp.apply_out(unit)
+            if dy <= 0:
+                break
+            prices.append(round(dy / unit, 2))
+        return prices
+
+    def _price_grid_buy(self, max_orders: int, unit: float = 1.0) -> list[float]:
+        """
+        Сетка цен на покупку базового актива (тратим cash), размер unit.
+        """
+        tmp = self._clone_pool()
+        prices = []
+        for _ in range(max_orders):
+            dy = self._dy_for_dx(tmp, unit)
+            if dy <= 0:
+                break
+            received = tmp.apply_in(dy)
+            if received <= 0:
+                break
+            prices.append(round(dy / received, 2))
+        return prices
+
+
+class AutoMarketMaker(BaseAMMAgent):
     """
     AutoMarketMaker creates limit orders on both sides of the spread trying to gain on
     spread between bid and ask prices, and maintain its assets to cash ratio in balance.
@@ -596,11 +679,11 @@ class AutoMarketMaker(Trader):
 
     MAX_LIMIT_BUY = 100
     MAX_LIMIT_SELL = 200
-    MAX_TRADE_FRACTION = 0.1  # доля запасов, доступная для рыночных действий за шаг
-    LIMIT_FRACTION = 0.2      # доля запасов, распределяемая по сетке лимиток
+    MAX_TRADE_FRACTION = 0.1 # доля запасов, доступная для рыночных действий за шаг
+    LIMIT_FRACTION = 0.2 # доля запасов, распределяемая по сетке лимитных ордеров
 
     def __init__(self, market: ExchangeAgent, cash: float, assets: int = 0, initial_ratio: float = 0.5):
-        super().__init__(market, cash, assets)
+        super().__init__(market, cash, assets, pool_cls=ConstantProductPool)
         self.type = 'Automated Market Maker'
         self.initial_ratio = initial_ratio
         self.cash_to_buy = self.cash * self.initial_ratio
@@ -641,18 +724,12 @@ class AutoMarketMaker(Trader):
         k = self.cash / price - self.assets
         return max(0, floor(min(k, qty)))
 
-    def get_price_to_sell_in_limit_order(self, i):
-        return (self.cash * self.assets) / ((self.assets - i)**2)
-
-    def get_price_to_buy_in_limit_order(self, i):
-        return (self.cash * self.assets) / ((self.assets + i)**2)
-
     def call(self):
         # Clear previous orders
         for order in self.orders.copy():
             self._cancel_order(order)
 
-        # 1) Начальная балансировка до целевого отношения
+        # Начальная балансировка до целевого отношения
         if self.cash_to_buy > 0:
             spend_cap = min(self.cash_to_buy, self.cash * self.MAX_TRADE_FRACTION)
             best_ask = self.market.get_best_ask()
@@ -666,7 +743,7 @@ class AutoMarketMaker(Trader):
             if self.cash_to_buy > 0:
                 return
 
-        # 2) Одноразовая рыночная подстройка к книге заявок
+        # Одноразовая рыночная подстройка к книге заявок
         bid = self.market.get_best_bid()
         ask = self.market.get_best_ask()
 
@@ -685,32 +762,82 @@ class AutoMarketMaker(Trader):
             if to_buy > 0:
                 self._buy_market(to_buy)
 
-        # 3) Размещение ограниченной сетки лимитных ордеров
-        prices_sell: list[float] = []
+        # Размещение ограниченной сетки лимитных ордеров
+        self._sync_pool()
         allowed_sell_orders = min(self.MAX_LIMIT_SELL, max(1, int(self.assets * self.LIMIT_FRACTION)))
-        for i in range(1, allowed_sell_orders + 1):
-            prices_sell.append(ceil(self.get_price_to_sell_in_limit_order(i) * 10) / 10)
+        try:
+            ref_price = max(self.market.price(), 1e-6)
+        except Exception:
+            ref_price = max(self.pool.spot_price(), 1e-6)
+        allowed_buy_orders = min(self.MAX_LIMIT_BUY, max(1, int((self.cash / ref_price) * self.LIMIT_FRACTION)))
 
-        prices_buy: list[float] = []
-        ref_price = None
-        if ask:
-            ref_price = ask['price']
-        elif bid:
-            ref_price = bid['price']
-        else:
-            try:
-                ref_price = self.market.price()
-            except Exception:
-                ref_price = 1.0
-        if ref_price <= 0:
-            ref_price = 1.0
+        sell_prices = self._price_grid_sell(allowed_sell_orders, unit=1.0)
+        buy_prices = self._price_grid_buy(allowed_buy_orders, unit=1.0)
 
-        virtual_inventory = max(0.0, min(self.cash / ref_price, self.cash / ref_price))
-        allowed_buy_orders = min(self.MAX_LIMIT_BUY, max(1, int(virtual_inventory * self.LIMIT_FRACTION)))
-        for i in range(1, allowed_buy_orders + 1):
-            prices_buy.append(floor(self.get_price_to_buy_in_limit_order(i) * 10) / 10)
-
-        for p in prices_sell:
+        for p in sell_prices:
             self._sell_limit(1, p)
-        for p in prices_buy:
+        for p in buy_prices:
+            self._buy_limit(1, p)
+
+
+class HFMarketMaker(BaseAMMAgent):
+    """
+    Hybrid Function Market Maker (HFMM) по Curve CryptoInvariant (без комиссии).
+    Использует HFPool для вычислений обменной кривой.
+    """
+
+    MAX_LIMIT_BUY = 50
+    MAX_LIMIT_SELL = 50
+    MAX_TRADE_FRACTION = 0.1
+    LIMIT_FRACTION = 0.2
+
+    def __init__(self, market: ExchangeAgent, cash: float, assets: int = 0, A: float = 100.0, gamma: float = 1e-3):
+        super().__init__(market, cash, assets, pool_cls=HFPool, pool_kwargs={"A": A, "gamma": gamma})
+        self.type = 'HFMM'
+
+    def call(self):
+        # Remove previous orders
+        for order in self.orders.copy():
+            self._cancel_order(order)
+
+        self._sync_pool()
+        if self.assets <= 0 or self.cash <= 0:
+            return
+
+        bid = self.market.get_best_bid()
+        ask = self.market.get_best_ask()
+
+        # Рыночная подстройка с ограничением на долю запасов
+        max_sell = min(self.assets * self.MAX_TRADE_FRACTION, self.assets)
+        max_buy_cash = self.cash * self.MAX_TRADE_FRACTION
+
+        if bid and max_sell > 0:
+            qty = min(max_sell, bid['qty'])
+            dy = self.pool.quote_out(qty)
+            price_pool = dy / qty if qty > 0 else float('inf')
+            if dy > 0 and bid['price'] >= price_pool:
+                self._sell_market(qty)
+
+        if ask and max_buy_cash > 0:
+            qty_affordable = min(max_buy_cash / ask['price'], ask['qty'])
+            dy_needed = self._dy_for_dx(self.pool, qty_affordable)
+            price_pool = dy_needed / qty_affordable if qty_affordable > 0 else float('inf')
+            if dy_needed > 0 and ask['price'] <= price_pool:
+                self._buy_market(qty_affordable)
+
+        # Сетка лимитных ордеров
+        self._sync_pool()
+        sell_orders = min(self.MAX_LIMIT_SELL, max(1, int(self.assets * self.LIMIT_FRACTION)))
+        try:
+            ref_price = max(self.market.price(), 1e-6)
+        except Exception:
+            ref_price = max(self.pool.spot_price(), 1e-6)
+        buy_orders = min(self.MAX_LIMIT_BUY, max(1, int((self.cash / ref_price) * self.LIMIT_FRACTION)))
+
+        sell_prices = self._price_grid_sell(sell_orders, unit=1.0)
+        buy_prices = self._price_grid_buy(buy_orders, unit=1.0)
+
+        for p in sell_prices:
+            self._sell_limit(1, p)
+        for p in buy_prices:
             self._buy_limit(1, p)

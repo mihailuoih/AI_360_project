@@ -379,7 +379,12 @@ def run_repeated(
     scenario_counter: int,
     rows: List[Dict],
 ) -> int:
-    for repeat_idx in range(1, repeats + 1):
+    show_progress = cfg.get("show_repeats_progress", True)
+    iterator = range(1, repeats + 1)
+    if show_progress:
+        iterator = tqdm(iterator, desc=f"Repeats {scenario_id}", leave=False)
+
+    for repeat_idx in iterator:
         seed = base_seed + scenario_counter * repeats + repeat_idx
         scenario_meta = {
             "scenario_id": scenario_id,

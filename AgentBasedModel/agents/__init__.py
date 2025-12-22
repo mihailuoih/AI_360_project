@@ -7,4 +7,5 @@ from AgentBasedModel.agents.agents import (
     Universalist,
     MarketMaker,
     AutoMarketMaker,
+    HFMarketMaker,
 )
