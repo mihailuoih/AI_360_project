@@ -1,5 +1,7 @@
 import json
 import random
+import argparse
+import os
 from pathlib import Path
 from typing import Dict, List
 
@@ -11,6 +13,7 @@ from AgentBasedModel.agents.agents import (
     Chartist,
     ExchangeAgent,
     Fundamentalist,
+    HFMarketMaker,
     MarketMaker,
     Random,
     Universalist,
@@ -18,7 +21,7 @@ from AgentBasedModel.agents.agents import (
 from AgentBasedModel.events.events import FundamentalPriceShockRelative, AgentExitShock
 from AgentBasedModel.simulator import Simulator
 from AgentBasedModel.states import aggToShock
-from AgentBasedModel.states.states import detect_shock_end, panic
+from AgentBasedModel.states.states import detect_shock_end, detect_spread_recovery, panic
 from AgentBasedModel.visualization.market import (
     plot_liquidity,
     plot_price,
@@ -66,6 +69,24 @@ def load_config(path: Path) -> Dict:
         return json.load(fp)
 
 
+def resolve_config_path() -> Path:
+    """
+    Priority:
+    1) CLI --config <path>
+    2) ENV ABM_CONFIG
+    3) default CONFIG_PATH
+    """
+    parser = argparse.ArgumentParser(add_help=True)
+    parser.add_argument("--config", type=str, default=None, help="Path to config JSON")
+    args, _ = parser.parse_known_args()
+    if args.config:
+        return Path(args.config)
+    env_cfg = os.environ.get("ABM_CONFIG")
+    if env_cfg:
+        return Path(env_cfg)
+    return CONFIG_PATH
+
+
 def default_agent_presets() -> List[Dict]:
     return [
         {
@@ -81,6 +102,8 @@ def price_levels(cfg: Dict) -> List[int]:
         return list(range(1, 11)) + list(range(15, 91, 5))
     min_percent = int(cfg.get("min_percent", 1))
     max_percent = int(cfg.get("max_percent", 90))
+    if max_percent <= 0:
+        return [0]
     switch = int(cfg.get("switch_percent", 10))
     fine_step = int(cfg.get("fine_step", 1))
     coarse_step = int(cfg.get("coarse_step", 5))
@@ -132,6 +155,8 @@ def build_traders(exchange: ExchangeAgent, agents_cfg: Dict, mode: str, cash: fl
         traders.append(MarketMaker(exchange, cash, assets))
     elif mode == "amm":
         traders.append(AutoMarketMaker(exchange, cash, assets))
+    elif mode == "hfmm":
+        traders.append(HFMarketMaker(exchange, cash, assets))
     else:
         raise ValueError(f"Unknown market mode: {mode}")
     return traders
@@ -198,9 +223,20 @@ def run_simulation(cfg: Dict, preset: Dict, mode: str, scenario_meta: Dict, even
 
     detect_cfg = cfg.get("shock_detection", {})
     detect_kwargs = {k: detect_cfg[k] for k in SHOCK_PARAM_KEYS if k in detect_cfg}
-    detect_kwargs["t0"] = scenario_meta["t0"]
+    t0 = scenario_meta["t0"]
+    detect_kwargs["t0"] = t0
 
     event_label, event_obj, price_diag = extract_event_diagnostics(simulator)
+
+    spread_rec = detect_spread_recovery(
+        info,
+        t0=t0,
+        W_ref=detect_kwargs.get("W_ref", 50),
+        W_stab=detect_kwargs.get("W_stab", 30),
+        consec_ok=detect_kwargs.get("consec_ok", 3),
+        relax=detect_cfg.get("spread_relax", detect_cfg.get("vol_relax", 1.5)),
+        band_k_sigma=detect_cfg.get("band_k_sigma", 2.0),
+    )
 
     row = build_result_row(
         info=info,
@@ -214,6 +250,10 @@ def run_simulation(cfg: Dict, preset: Dict, mode: str, scenario_meta: Dict, even
         agent_counts=preset["agents"],
         simulator=simulator,
     )
+    row["t_spread_end"] = spread_rec.get("t_spread_end")
+    row["spread_ref"] = spread_rec.get("spread_ref")
+    row["spread_post"] = spread_rec.get("spread_post")
+    row["spread_duration"] = (row["t_spread_end"] - t0) if (row.get("t_spread_end") is not None and t0 is not None) else None
     return row
 
 
@@ -272,15 +312,43 @@ def build_result_row(
         "plot_files": ";".join(plot_files),
     }
 
+    def _mean_clean(seq):
+        seq = [x for x in seq if x is not None]
+        return sum(seq) / len(seq) if seq else None
+
+    def _std_clean(seq):
+        seq = [x for x in seq if x is not None]
+        if len(seq) < 2:
+            return None
+        m = sum(seq) / len(seq)
+        return (sum((x - m) ** 2 for x in seq) / len(seq)) ** 0.5
+
+    row["spread_mean"] = _mean_clean(info.spread_sizes)
+    row["spread_std"] = _std_clean(info.spread_sizes)
+    row["rel_spread_mean"] = _mean_clean(info.rel_spreads)
+    row["rel_spread_std"] = _std_clean(info.rel_spreads)
+    row["top_qty_mean"] = _mean_clean(info.top_qty)
+    row["top_qty_std"] = _std_clean(info.top_qty)
+    row["depth_band_mean"] = _mean_clean(info.depth_band)
+    row["depth_band_std"] = _std_clean(info.depth_band)
+    row["spread_per_vol_mean"] = _mean_clean(info.spread_per_volume)
+    row["spread_per_vol_std"] = _std_clean(info.spread_per_volume)
+    row["n_orders_bid_mean"] = _mean_clean([c["bid"] for c in info.order_counts])
+    row["n_orders_ask_mean"] = _mean_clean([c["ask"] for c in info.order_counts])
+    row["n_orders_bid_std"] = _std_clean([c["bid"] for c in info.order_counts])
+    row["n_orders_ask_std"] = _std_clean([c["ask"] for c in info.order_counts])
+
     for name, factory in AGENT_FACTORIES.items():
         row[f"n_{name.lower()}"] = agent_counts.get(name, 0)
     row["n_marketmaker"] = 1 if scenario_meta["mode"] == "mm" else 0
     row["n_automarketmaker"] = 1 if scenario_meta["mode"] == "amm" else 0
+    row["n_hfmm"] = 1 if scenario_meta["mode"] == "hfmm" else 0
     return row
 
 
-def main():
-    cfg = load_config(CONFIG_PATH)
+def main(config_path: Path = None):
+    cfg_path = config_path or CONFIG_PATH
+    cfg = load_config(cfg_path)
     presets = cfg.get("agent_presets") or default_agent_presets()
     price_cfg = cfg.get("price_shock", {})
     liquidity_cfg = cfg.get("liquidity_shock", {})
@@ -289,28 +357,36 @@ def main():
     price_t0 = int(price_cfg.get("t0", 200))
     liquidity_t0 = int(liquidity_cfg.get("t0", 250))
 
+    modes = cfg.get("modes") or ["mm", "amm", "hfmm"]
     price_values = price_levels(price_cfg)
     liquidity_values = liquidity_levels(liquidity_cfg)
 
     tasks = []
     for preset in presets:
         preset_id = preset.get("id", "preset")
-        for mode in ("mm", "amm"):
+        for mode in modes:
             for percent in price_values:
+                # если шок = 0, шоковое событие не добавляем (базовый сценарий)
+                price_events = []
+                scenario_type = "price"
+                if percent > 0:
+                    price_events = [
+                        {
+                            "cls": FundamentalPriceShockRelative,
+                            "params": {"it": price_t0, "fraction": -percent / 100.0},
+                        }
+                    ]
+                else:
+                    scenario_type = "base"
                 tasks.append(
                     {
-                        "scenario_type": "price",
+                        "scenario_type": scenario_type,
                         "preset": preset,
                         "mode": mode,
                         "value": percent,
                         "value_kind": "percent",
                         "t0": price_t0,
-                        "event_specs": [
-                            {
-                                "cls": FundamentalPriceShockRelative,
-                                "params": {"it": price_t0, "fraction": -percent / 100.0},
-                            }
-                        ],
+                        "event_specs": price_events,
                         "scenario_id": f"price_{preset_id}_{mode}_{percent:02d}",
                     }
                 )
@@ -404,4 +480,4 @@ def run_repeated(
 
 
 if __name__ == "__main__":
-    main()
+    main(resolve_config_path())

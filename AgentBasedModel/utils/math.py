@@ -86,3 +86,16 @@ def paired_ttest(sample_a, sample_b, alpha: float = 0.05) -> dict:
         "ci_low": float(ci_low),
         "ci_high": float(ci_high),
     }
+
+
+def variance_test(sample_a, sample_b, center="median") -> dict:
+    """
+    Тест равенства дисперсий (Levene)
+    """
+    a = np.asarray(sample_a, dtype=float)
+    b = np.asarray(sample_b, dtype=float)
+    mask = ~(np.isnan(a) | np.isnan(b))
+    a = a[mask]
+    b = b[mask]
+    stat, p = stats.levene(a, b, center=center)
+    return {"stat": float(stat), "p_value": float(p), "center": center}

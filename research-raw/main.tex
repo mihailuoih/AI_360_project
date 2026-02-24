@@ -1,0 +1,57 @@
+\documentclass[a4paper]{article}
+
+%% Language and font encodings
+\usepackage[utf8]{inputenc}
+\usepackage[pdftex,dvipsnames]{xcolor}  % Coloured text etc.
+
+\usepackage{booktabs}
+\usepackage{tabu}
+\usepackage[T1]{fontenc}
+\usepackage[T2A]{fontenc}
+\usepackage[russian]{babel}
+\usepackage{subfiles}
+\usepackage{array}
+\usepackage{indentfirst}
+\usepackage{amssymb}
+\usepackage{enumerate}
+\usepackage{ulem}
+\usepackage{authblk}
+\usepackage{tikz}
+\usepackage{icomma}
+\usepackage{gensymb}
+\usepackage{cancel}
+\usepackage{listings}
+\usepackage{hyperref}
+\usepackage[backend=biber,style=gost-numeric,language=auto,sorting=none]{biblatex}
+
+\addbibresource{refs.bib}
+
+%% Sets page size and margins
+\usepackage[a4paper,top=3cm,bottom=2cm,left=3cm,right=3cm,marginparwidth=1.75cm]{geometry}
+
+%% Useful packages
+\usepackage{amsmath}
+\usepackage{graphicx}
+%\usepackage{apacite}
+%\usepackage[colorinlistoftodos]{todonotes}
+\usepackage[colorlinks=true, allcolors=blue]{hyperref}
+
+\usepackage{xargs}                      % Use more than one optional parameter in a new commands
+\usepackage[colorinlistoftodos,prependcaption,textsize=tiny]{todonotes}
+\newcommandx{\unsure}[2][1=]{\todo[linecolor=red,backgroundcolor=red!25,bordercolor=red,#1]{#2}}
+\newcommandx{\change}[2][1=]{\todo[linecolor=blue,backgroundcolor=blue!25,bordercolor=blue,#1]{#2}}
+\newcommandx{\info}[2][1=]{\todo[linecolor=OliveGreen,backgroundcolor=OliveGreen!10,bordercolor=OliveGreen!0,#1]{#2}}
+\newcommandx{\thiswillnotshow}[2][1=]{\todo[disable,#1]{#2}}
+
+\title{Влияние автоматизированного маркет-мейкера на устойчивость рынка при шоковых воздействиях}
+\author{Леденёв М. А. под руководством Лукьянченко П. П.}
+\date{}
+
+\begin{document}
+\maketitle
+
+\input{paper}
+
+\printbibliography
+
+\end{document}

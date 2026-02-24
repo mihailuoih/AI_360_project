@@ -384,3 +384,53 @@ def detect_shock_end(
             }
         }
     }
+
+
+def detect_spread_recovery(
+    info: SimulatorInfo,
+    t0: int,
+    *,
+    W_ref: int = 50,
+    W_stab: int = 30,
+    consec_ok: int = 3,
+    relax: float = 1.5,
+    band_k_sigma: float = 2.0
+) -> dict:
+    """
+    Момент восстановления ликвидности по спреду: средний спред возвращается в коридор базового уровня.
+    """
+    if not hasattr(info, "spread_sizes") or not info.spread_sizes:
+        return {}
+    spreads = info.spread_sizes
+    if t0 is None or t0 <= W_ref or len(spreads) < t0 + W_stab:
+        return {}
+
+    base_slice = [s for s in spreads[max(0, t0 - W_ref):t0] if s is not None]
+    if not base_slice:
+        return {}
+    mean_ref = sum(base_slice) / len(base_slice)
+    sigma_ref = math.std(base_slice) if len(base_slice) > 1 else 0.0
+
+    ok = 0
+    t_spread_end = None
+    for t in range(t0, min(len(spreads) - W_stab + 1, t0 + 5000)):
+        wnd = [s for s in spreads[t:t + W_stab] if s is not None]
+        if not wnd:
+            ok = 0
+            continue
+        mean_w = sum(wnd) / len(wnd)
+        cond_mean = mean_w <= mean_ref * relax
+        cond_band = sigma_ref == 0.0 or mean_w <= mean_ref + band_k_sigma * sigma_ref
+        if cond_mean and cond_band:
+            ok += 1
+            if ok >= consec_ok:
+                t_spread_end = t + W_stab - 1
+                break
+        else:
+            ok = 0
+
+    return {
+        "t_spread_end": t_spread_end,
+        "spread_ref": mean_ref,
+        "spread_post": mean_w if t_spread_end is not None else None,
+    }

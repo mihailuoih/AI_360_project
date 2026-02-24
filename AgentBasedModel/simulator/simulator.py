@@ -62,6 +62,12 @@ class SimulatorInfo:
         # Market Statistics
         self.prices = list()  # price at the end of iteration
         self.spreads = list()  # bid-ask spreads
+        self.spread_sizes = list()  # ask - bid
+        self.rel_spreads = list()  # (ask - bid)/mid
+        self.top_qty = list()  # суммарный объем на лучших котировках
+        self.depth_band = list()  # объем в окрестности мида
+        self.spread_per_volume = list()  # спред, деленный на объем лучших котировок
+        self.order_counts = list()  # количество ордеров в книге
         self.dividends = list()  # dividend paid at each iteration
         self.orders = list()  # order book statistics
 
@@ -72,6 +78,9 @@ class SimulatorInfo:
         self.types = list()  # agent: current type
         self.sentiments = list()  # agent: current sentiment
         self.returns = [{tr_id: 0 for tr_id in self.traders.keys()}]  # agent: iteration return
+
+        # ширина ценового окна для оценки глубины (доля от мида)
+        self.depth_band_eps = 0.01
 
         """
         # Market Statistics
@@ -111,8 +120,49 @@ class SimulatorInfo:
         - :class:`list[dict]` **types** --> each agent's type on each iteration
         """
         # Market Statistics
-        self.prices.append(self.exchange.price() if self.exchange.spread() else 0)
-        self.spreads.append((self.exchange.spread()))
+        spread_dict = self.exchange.spread()
+        price_val = self.exchange.price() if spread_dict else 0
+        self.prices.append(price_val)
+        self.spreads.append(spread_dict)
+
+        if spread_dict:
+            bid = spread_dict['bid']
+            ask = spread_dict['ask']
+            mid = (bid + ask) / 2
+            size = ask - bid
+            rel = size / mid if mid else None
+        else:
+            bid = ask = mid = None
+            size = rel = None
+        self.spread_sizes.append(size)
+        self.rel_spreads.append(rel)
+
+        best_bid_qty = self.exchange.order_book['bid'].first.qty if self.exchange.order_book['bid'].first else 0
+        best_ask_qty = self.exchange.order_book['ask'].first.qty if self.exchange.order_book['ask'].first else 0
+        self.top_qty.append(best_bid_qty + best_ask_qty)
+        self.spread_per_volume.append((size / (best_bid_qty + best_ask_qty)) if size is not None and (best_bid_qty + best_ask_qty) > 0 else None)
+
+        depth = 0
+        if spread_dict and mid:
+            band_low = mid * (1 - self.depth_band_eps)
+            band_high = mid * (1 + self.depth_band_eps)
+            for order in self.exchange.order_book['bid']:
+                if order.price >= band_low:
+                    depth += order.qty
+                else:
+                    break
+            for order in self.exchange.order_book['ask']:
+                if order.price <= band_high:
+                    depth += order.qty
+                else:
+                    break
+        self.depth_band.append(depth)
+
+        self.order_counts.append({
+            'bid': len(self.exchange.order_book['bid']),
+            'ask': len(self.exchange.order_book['ask'])
+        })
+
         self.dividends.append(self.exchange.dividend())
         self.orders.append({
             'quantity': {'bid': len(self.exchange.order_book['bid']), 'ask': len(self.exchange.order_book['ask'])},
