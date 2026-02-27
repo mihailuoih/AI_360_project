@@ -32,7 +32,10 @@
     "fractions": [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9]
   },
   "save_plots": false,
-  "repeats": 200,
+  "save_timeseries": false,
+  "timeseries_stride": 1,
+  "timeseries_minimal": true,
+  "repeats": 10000,
   "base_seed": 123,
   "panic": {
     "short_window": 10,

@@ -2,6 +2,7 @@ import json
 import random
 import argparse
 import os
+import csv
 from pathlib import Path
 from typing import Dict, List
 
@@ -33,6 +34,7 @@ from AgentBasedModel.visualization.market import (
 CONFIG_PATH = Path("config/scenarios.json")
 RESULTS_PATH = Path("results/summary.csv")
 PLOTS_DIR = Path("results/plots")
+TIMESERIES_DIR = Path("results/timeseries")
 
 AGENT_FACTORIES = {
     "Random": Random,
@@ -67,6 +69,52 @@ def load_config(path: Path) -> Dict:
         raise FileNotFoundError(f"Config file not found: {path}")
     with path.open("r", encoding="utf-8") as fp:
         return json.load(fp)
+
+
+def load_done_run_ids(path: Path) -> set:
+    if not path.exists() or path.stat().st_size == 0:
+        return set()
+    done = set()
+    with path.open("r", encoding="utf-8", newline="") as fp:
+        reader = csv.DictReader(fp)
+        if not reader.fieldnames or "scenario_run_id" not in reader.fieldnames:
+            return set()
+        for row in reader:
+            rid = row.get("scenario_run_id")
+            if rid:
+                done.add(rid)
+    return done
+
+
+def read_csv_header(path: Path):
+    if not path.exists() or path.stat().st_size == 0:
+        return None
+    with path.open("r", encoding="utf-8", newline="") as fp:
+        reader = csv.reader(fp)
+        try:
+            return next(reader)
+        except StopIteration:
+            return None
+
+
+def append_summary_row(path: Path, row: Dict, header: List[str] = None):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    existing_header = header if header is not None else read_csv_header(path)
+
+    if existing_header is None:
+        fieldnames = list(row.keys())
+        with path.open("w", encoding="utf-8", newline="") as fp:
+            writer = csv.DictWriter(fp, fieldnames=fieldnames)
+            writer.writeheader()
+            writer.writerow(row)
+        return fieldnames
+
+    fieldnames = existing_header
+    payload = {k: row.get(k) for k in fieldnames}
+    with path.open("a", encoding="utf-8", newline="") as fp:
+        writer = csv.DictWriter(fp, fieldnames=fieldnames)
+        writer.writerow(payload)
+    return fieldnames
 
 
 def resolve_config_path() -> Path:
@@ -189,6 +237,51 @@ def generate_plots(info, scenario_id: str, plot_cfgs: List[Dict], enabled: bool 
     return saved
 
 
+def save_timeseries(
+    info,
+    scenario_run_id: str,
+    enabled: bool = False,
+    stride: int = 1,
+    minimal: bool = True,
+) -> str:
+    if not enabled:
+        return ""
+    step = max(1, int(stride))
+    n = len(info.prices)
+    if n == 0:
+        return ""
+
+    rows = []
+    for i in range(0, n, step):
+        spread = info.spreads[i] if i < len(info.spreads) else None
+        counts = info.order_counts[i] if i < len(info.order_counts) else {"bid": None, "ask": None}
+        best_bid_qty = info.best_bid_qty[i] if i < len(info.best_bid_qty) else None
+        best_ask_qty = info.best_ask_qty[i] if i < len(info.best_ask_qty) else None
+
+        row = {
+            "iteration": i,
+            "price": info.prices[i] if i < len(info.prices) else None,
+            "bid": spread["bid"] if spread else None,
+            "ask": spread["ask"] if spread else None,
+            "best_bid_qty": best_bid_qty,
+            "best_ask_qty": best_ask_qty,
+            "n_orders_bid": counts["bid"],
+            "n_orders_ask": counts["ask"],
+        }
+        if not minimal:
+            row["spread"] = info.spread_sizes[i] if i < len(info.spread_sizes) else None
+            row["rel_spread"] = info.rel_spreads[i] if i < len(info.rel_spreads) else None
+            row["top_qty"] = info.top_qty[i] if i < len(info.top_qty) else None
+            row["depth_band"] = info.depth_band[i] if i < len(info.depth_band) else None
+            row["spread_per_vol"] = info.spread_per_volume[i] if i < len(info.spread_per_volume) else None
+        rows.append(row)
+
+    TIMESERIES_DIR.mkdir(parents=True, exist_ok=True)
+    out_path = TIMESERIES_DIR / f"{scenario_run_id}.csv.gz"
+    pd.DataFrame(rows).to_csv(out_path, index=False, compression="gzip")
+    return str(out_path)
+
+
 def run_simulation(cfg: Dict, preset: Dict, mode: str, scenario_meta: Dict, event_specs: List[Dict], seed: int) -> Dict:
     random.seed(seed)
 
@@ -237,6 +330,13 @@ def run_simulation(cfg: Dict, preset: Dict, mode: str, scenario_meta: Dict, even
         relax=detect_cfg.get("spread_relax", detect_cfg.get("vol_relax", 1.5)),
         band_k_sigma=detect_cfg.get("band_k_sigma", 2.0),
     )
+    timeseries_file = save_timeseries(
+        info=info,
+        scenario_run_id=scenario_meta["scenario_run_id"],
+        enabled=cfg.get("save_timeseries", False),
+        stride=cfg.get("timeseries_stride", 1),
+        minimal=cfg.get("timeseries_minimal", True),
+    )
 
     row = build_result_row(
         info=info,
@@ -254,6 +354,7 @@ def run_simulation(cfg: Dict, preset: Dict, mode: str, scenario_meta: Dict, even
     row["spread_ref"] = spread_rec.get("spread_ref")
     row["spread_post"] = spread_rec.get("spread_post")
     row["spread_duration"] = (row["t_spread_end"] - t0) if (row.get("t_spread_end") is not None and t0 is not None) else None
+    row["timeseries_file"] = timeseries_file
     return row
 
 
@@ -361,6 +462,15 @@ def main(config_path: Path = None):
     price_values = price_levels(price_cfg)
     liquidity_values = liquidity_levels(liquidity_cfg)
 
+    RESULTS_PATH.parent.mkdir(parents=True, exist_ok=True)
+    resume_from_summary = cfg.get("resume_from_summary", True)
+    if not resume_from_summary and RESULTS_PATH.exists():
+        RESULTS_PATH.unlink()
+    done_run_ids = load_done_run_ids(RESULTS_PATH) if resume_from_summary else set()
+    csv_header = read_csv_header(RESULTS_PATH)
+    if done_run_ids:
+        print(f"Resume mode: found {len(done_run_ids)} completed runs in {RESULTS_PATH}", flush=True)
+
     tasks = []
     for preset in presets:
         preset_id = preset.get("id", "preset")
@@ -410,7 +520,6 @@ def main(config_path: Path = None):
                     }
                 )
 
-    rows = []
     scenario_counter = 0
 
     for idx, task in enumerate(tqdm(tasks, desc="Scenarios", total=len(tasks)), start=1):
@@ -431,13 +540,11 @@ def main(config_path: Path = None):
             repeats=repeats,
             base_seed=base_seed,
             scenario_counter=scenario_counter,
-            rows=rows,
+            done_run_ids=done_run_ids,
+            csv_header=csv_header,
         )
-
-    df = pd.DataFrame(rows)
-    RESULTS_PATH.parent.mkdir(parents=True, exist_ok=True)
-    df.to_csv(RESULTS_PATH, index=False)
-    print(df)
+        csv_header = read_csv_header(RESULTS_PATH)
+    print(f"Finished. Summary stored in {RESULTS_PATH}", flush=True)
 
 
 def run_repeated(
@@ -453,13 +560,15 @@ def run_repeated(
     repeats: int,
     base_seed: int,
     scenario_counter: int,
-    rows: List[Dict],
+    done_run_ids: set,
+    csv_header: List[str] = None,
 ) -> int:
     show_progress = cfg.get("show_repeats_progress", True)
     iterator = range(1, repeats + 1)
     if show_progress:
         iterator = tqdm(iterator, desc=f"Repeats {scenario_id}", leave=False)
 
+    local_header = csv_header
     for repeat_idx in iterator:
         seed = base_seed + scenario_counter * repeats + repeat_idx
         scenario_meta = {
@@ -474,8 +583,11 @@ def run_repeated(
             "seed": seed,
             "t0": t0,
         }
+        if scenario_meta["scenario_run_id"] in done_run_ids:
+            continue
         row = run_simulation(cfg, preset, mode, scenario_meta, event_specs, seed)
-        rows.append(row)
+        local_header = append_summary_row(RESULTS_PATH, row, header=local_header)
+        done_run_ids.add(scenario_meta["scenario_run_id"])
     return scenario_counter + 1
 
 

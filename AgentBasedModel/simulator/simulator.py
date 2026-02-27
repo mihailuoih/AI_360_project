@@ -65,6 +65,8 @@ class SimulatorInfo:
         self.spread_sizes = list()  # ask - bid
         self.rel_spreads = list()  # (ask - bid)/mid
         self.top_qty = list()  # суммарный объем на лучших котировках
+        self.best_bid_qty = list()  # объем на лучшем bid
+        self.best_ask_qty = list()  # объем на лучшем ask
         self.depth_band = list()  # объем в окрестности мида
         self.spread_per_volume = list()  # спред, деленный на объем лучших котировок
         self.order_counts = list()  # количество ордеров в книге
@@ -139,6 +141,8 @@ class SimulatorInfo:
 
         best_bid_qty = self.exchange.order_book['bid'].first.qty if self.exchange.order_book['bid'].first else 0
         best_ask_qty = self.exchange.order_book['ask'].first.qty if self.exchange.order_book['ask'].first else 0
+        self.best_bid_qty.append(best_bid_qty)
+        self.best_ask_qty.append(best_ask_qty)
         self.top_qty.append(best_bid_qty + best_ask_qty)
         self.spread_per_volume.append((size / (best_bid_qty + best_ask_qty)) if size is not None and (best_bid_qty + best_ask_qty) > 0 else None)
 

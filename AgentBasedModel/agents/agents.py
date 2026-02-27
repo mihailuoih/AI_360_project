@@ -341,12 +341,12 @@ class Fundamentalist(Trader):
 
     def call(self):
         pf = round(self.evaluate(self.market.dividend(self.access), self.market.risk_free), 1)  # fundamental price
-        p = self.market.price()
         spread = self.market.spread()
         t_cost = self.market.transaction_cost
 
         if spread is None:
             return
+        p = self.market.price()
 
         random_state = random.random()
         qty = Fundamentalist.draw_quantity(pf, p)  # quantity to buy
@@ -409,6 +409,8 @@ class Chartist(Trader):
         random_state = random.random()
         t_cost = self.market.transaction_cost
         spread = self.market.spread()
+        if spread is None:
+            return
 
         if self.sentiment == 'Optimistic':
             # Market order
@@ -446,6 +448,10 @@ class Chartist(Trader):
         n_chartists = sum([tr_type == 'Chartist' for tr_type in info.types[-1].values()])
         n_optimistic = sum([tr_type == 'Optimistic' for tr_type in info.sentiments[-1].values()])
         n_pessimists = sum([tr_type == 'Pessimistic' for tr_type in info.sentiments[-1].values()])
+        if n_chartists <= 0:
+            return
+        if self.market.spread() is None:
+            return
 
         dp = info.prices[-1] - info.prices[-2] if len(info.prices) > 1 else 0  # price derivative
         p = self.market.price()  # market price
@@ -508,6 +514,10 @@ class Universalist(Fundamentalist, Chartist):
         n_fundamentalists = sum([tr.type == 'Fundamentalist' for tr in info.traders.values()])
         n_optimistic = sum([tr.sentiment == 'Optimistic' for tr in info.traders.values() if tr.type == 'Chartist'])
         n_pessimists = sum([tr.sentiment == 'Pessimistic' for tr in info.traders.values() if tr.type == 'Chartist'])
+        if n_traders <= 0:
+            return
+        if self.market.spread() is None:
+            return
 
         dp = info.prices[-1] - info.prices[-2] if len(info.prices) > 1 else 0  # price derivative
         p = self.market.price()  # market price

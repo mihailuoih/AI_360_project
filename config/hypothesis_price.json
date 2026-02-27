@@ -35,7 +35,10 @@
     "fractions": []
   },
   "save_plots": false,
-  "repeats": 200,
+  "save_timeseries": false,
+  "timeseries_stride": 1,
+  "timeseries_minimal": true,
+  "repeats": 10000,
   "base_seed": 123,
   "panic": {
     "short_window": 10,
