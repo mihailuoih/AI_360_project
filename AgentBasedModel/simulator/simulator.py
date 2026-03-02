@@ -193,8 +193,16 @@ class SimulatorInfo:
         self.assets.append({t_id: t.assets for t_id, t in self.traders.items()})
         self.types.append({t_id: t.type for t_id, t in self.traders.items()})
         self.sentiments.append({t_id: t.sentiment for t_id, t in self.traders.items() if t.type == 'Chartist'})
-        self.returns.append({tr_id: (self.equities[-1][tr_id] - self.equities[-2][tr_id]) / self.equities[-2][tr_id]
-                             for tr_id in self.traders.keys()}) if len(self.equities) > 1 else None
+        if len(self.equities) > 1:
+            step_returns = {}
+            for tr_id in self.traders.keys():
+                prev_equity = self.equities[-2][tr_id]
+                curr_equity = self.equities[-1][tr_id]
+                if prev_equity == 0:
+                    step_returns[tr_id] = 0.0
+                else:
+                    step_returns[tr_id] = (curr_equity - prev_equity) / prev_equity
+            self.returns.append(step_returns)
 
     def fundamental_value(self, access: int = 1) -> list:
         divs = self.dividends.copy()
@@ -207,12 +215,23 @@ class SimulatorInfo:
     def stock_returns(self, roll: int = None) -> list or float:
         p = self.prices
         div = self.dividends
-        r = [(p[i+1] - p[i]) / p[i] + div[i] / p[i] for i in range(len(p) - 1)]
+        r = []
+        for i in range(len(p) - 1):
+            p0 = p[i]
+            p1 = p[i + 1]
+            d0 = div[i] if i < len(div) else 0
+            if p0 is None or p1 is None or p0 <= 0:
+                r.append(0.0)
+                continue
+            r.append((p1 - p0) / p0 + d0 / p0)
+        if not r:
+            return [] if roll else 0.0
         return rolling(r, roll) if roll else mean(r)
 
     def abnormal_returns(self, roll: int = None) -> list:
         rf = self.exchange.risk_free
-        r = [r - rf for r in self.stock_returns()]
+        stock_r = self.stock_returns(1)
+        r = [ret - rf for ret in stock_r]
         return rolling(r, roll) if roll else r
 
     def return_volatility(self, window: int = None) -> list or float:
@@ -236,7 +255,13 @@ class SimulatorInfo:
 
     def liquidity(self, roll: int = None) -> list or float:
         n = len(self.prices)
-        spreads = [el['ask'] - el['bid'] for el in self.spreads]
+        spreads = [(el['ask'] - el['bid']) if el else None for el in self.spreads]
         prices = self.prices
-        liq = [spreads[i] / prices[i] for i in range(n)]
-        return rolling(liq, roll) if roll else mean(liq)
+        liq = [
+            (spreads[i] / prices[i]) if spreads[i] is not None and prices[i] is not None and prices[i] > 0 else None
+            for i in range(n)
+        ]
+        if roll:
+            return rolling(liq, roll)
+        valid = [x for x in liq if x is not None]
+        return mean(valid) if valid else 0.0
