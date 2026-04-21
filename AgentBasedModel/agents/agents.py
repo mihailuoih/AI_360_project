@@ -696,9 +696,10 @@ class AutoMarketMaker(BaseAMMAgent):
         super().__init__(market, cash, assets, pool_cls=ConstantProductPool)
         self.type = 'Automated Market Maker'
         self.initial_ratio = initial_ratio
-        self.cash_to_buy = self.cash * self.initial_ratio
         if not (0 < initial_ratio < 1):
             raise ValueError(f'Wrong initial ratio type! Ratio: {self.initial_ratio}')
+        # Bootstrap нужен только когда AMM стартует практически без базового актива.
+        self.cash_to_buy = 0.0 if self.assets > 0 else self.cash * self.initial_ratio
 
     def _inner_price(self) -> float:
         """
@@ -781,12 +782,12 @@ class AutoMarketMaker(BaseAMMAgent):
             ref_price = max(self.pool.spot_price(), 1e-6)
         allowed_buy_orders = min(self.MAX_LIMIT_BUY, max(1, int((self.cash / ref_price) * self.LIMIT_FRACTION)))
 
-        sell_prices = self._price_grid_sell(allowed_sell_orders, unit=1.0)
-        buy_prices = self._price_grid_buy(allowed_buy_orders, unit=1.0)
+        ask_prices = self._price_grid_buy(allowed_sell_orders, unit=1.0)
+        bid_prices = self._price_grid_sell(allowed_buy_orders, unit=1.0)
 
-        for p in sell_prices:
+        for p in ask_prices:
             self._sell_limit(1, p)
-        for p in buy_prices:
+        for p in bid_prices:
             self._buy_limit(1, p)
 
 
@@ -844,10 +845,10 @@ class HFMarketMaker(BaseAMMAgent):
             ref_price = max(self.pool.spot_price(), 1e-6)
         buy_orders = min(self.MAX_LIMIT_BUY, max(1, int((self.cash / ref_price) * self.LIMIT_FRACTION)))
 
-        sell_prices = self._price_grid_sell(sell_orders, unit=1.0)
-        buy_prices = self._price_grid_buy(buy_orders, unit=1.0)
+        ask_prices = self._price_grid_buy(sell_orders, unit=1.0)
+        bid_prices = self._price_grid_sell(buy_orders, unit=1.0)
 
-        for p in sell_prices:
+        for p in ask_prices:
             self._sell_limit(1, p)
-        for p in buy_prices:
+        for p in bid_prices:
             self._buy_limit(1, p)

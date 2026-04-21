@@ -31,7 +31,7 @@ from AgentBasedModel.visualization.market import (
     plot_volatility_return,
 )
 
-CONFIG_PATH = Path("config/scenarios.json")
+CONFIG_PATH = Path("config/hypothesis_spread.json")
 RESULTS_PATH = Path("results/summary.csv")
 PLOTS_DIR = Path("results/plots")
 TIMESERIES_DIR = Path("results/timeseries")
@@ -190,21 +190,57 @@ def build_exchange(cfg: Dict) -> ExchangeAgent:
     )
 
 
-def build_traders(exchange: ExchangeAgent, agents_cfg: Dict, mode: str, cash: float, assets: int) -> List:
+def maker_endowment(cfg: Dict, mode: str) -> tuple[float, int]:
+    maker_cfg = cfg.get("market_maker_endowment", {})
+    mode_cfg = maker_cfg.get(mode, {})
+    cash = float(mode_cfg.get("cash", cfg.get("agent_cash", 10 ** 3)))
+    assets = int(mode_cfg.get("assets", cfg.get("agent_assets", 0)))
+    return cash, assets
+
+
+def validate_maker_endowment(cfg: Dict, mode: str) -> None:
+    if mode not in {"amm", "hfmm"}:
+        return
+
+    cash, assets = maker_endowment(cfg, mode)
+    if cash <= 0 or assets <= 0:
+        raise ValueError(
+            f"{mode.upper()} requires positive maker reserves: cash={cash}, assets={assets}"
+        )
+
+    p0 = float(cfg.get("exchange", {}).get("price", 100))
+    implied_price = cash / assets
+    rel_error = abs(implied_price - p0) / max(abs(p0), 1e-9)
+    if rel_error > 0.05:
+        raise ValueError(
+            f"{mode.upper()} initial reserve ratio must match exchange price. "
+            f"cash/assets={implied_price:.3f}, exchange.price={p0:.3f}"
+        )
+
+
+def build_traders(
+    exchange: ExchangeAgent,
+    agents_cfg: Dict,
+    mode: str,
+    agent_cash: float,
+    agent_assets: int,
+    maker_cash: float,
+    maker_assets: int,
+) -> List:
     traders = []
     for name, count in agents_cfg.items():
         factory = AGENT_FACTORIES.get(name)
         if factory is None:
             continue
         for _ in range(int(count)):
-            traders.append(factory(exchange, cash, assets))
+            traders.append(factory(exchange, agent_cash, agent_assets))
 
     if mode == "mm":
-        traders.append(MarketMaker(exchange, cash, assets))
+        traders.append(MarketMaker(exchange, maker_cash, maker_assets))
     elif mode == "amm":
-        traders.append(AutoMarketMaker(exchange, cash, assets))
+        traders.append(AutoMarketMaker(exchange, maker_cash, maker_assets))
     elif mode == "hfmm":
-        traders.append(HFMarketMaker(exchange, cash, assets))
+        traders.append(HFMarketMaker(exchange, maker_cash, maker_assets))
     else:
         raise ValueError(f"Unknown market mode: {mode}")
     return traders
@@ -287,8 +323,18 @@ def run_simulation(cfg: Dict, preset: Dict, mode: str, scenario_meta: Dict, even
 
     exchange = build_exchange(cfg)
     agent_cash = cfg.get("agent_cash", 10 ** 3)
-    agent_assets = cfg.get("agent_assets", 0)
-    traders = build_traders(exchange, preset["agents"], mode, agent_cash, agent_assets)
+    agent_assets = int(cfg.get("agent_assets", 0))
+    validate_maker_endowment(cfg, mode)
+    maker_cash, maker_assets = maker_endowment(cfg, mode)
+    traders = build_traders(
+        exchange,
+        preset["agents"],
+        mode,
+        agent_cash,
+        agent_assets,
+        maker_cash,
+        maker_assets,
+    )
     events = instantiate_events(event_specs)
 
     iterations = cfg.get("iterations", 600)

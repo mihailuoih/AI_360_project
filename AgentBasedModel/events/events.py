@@ -1,5 +1,14 @@
 from AgentBasedModel.simulator import Simulator
-from AgentBasedModel.agents import Trader, Universalist, Fundamentalist, MarketMaker, AutoMarketMaker, Chartist, Random
+from AgentBasedModel.agents import (
+    Trader,
+    Universalist,
+    Fundamentalist,
+    MarketMaker,
+    AutoMarketMaker,
+    HFMarketMaker,
+    Chartist,
+    Random,
+)
 from AgentBasedModel.utils.orders import Order
 from itertools import chain
 import random
@@ -116,7 +125,7 @@ class AgentExitShock(Event):
         victims = set()
         eligible = [
             trader for trader in self.simulator.traders
-            if not isinstance(trader, (MarketMaker, AutoMarketMaker))
+            if not isinstance(trader, (MarketMaker, AutoMarketMaker, HFMarketMaker))
         ]
         if not eligible or self.fraction <= 0:
             return

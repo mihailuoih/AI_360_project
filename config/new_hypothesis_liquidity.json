@@ -1,0 +1,107 @@
+{
+  "description": "Шоки ликвидности: сравнение MM, Uniswap AMM и HFMM при разных составах обычных агентов",
+  "iterations": 600,
+  "agent_cash": 1000,
+  "agent_assets": 0,
+  "market_maker_endowment": {
+    "mm": {"cash": 500, "assets": 5},
+    "amm": {"cash": 500, "assets": 5},
+    "hfmm": {"cash": 500, "assets": 5}
+  },
+  "exchange": {
+    "price": 100,
+    "std": 25,
+    "volume": 1000,
+    "rf": 0.0005,
+    "transaction_cost": 0.0
+  },
+  "modes": ["mm", "amm", "hfmm"],
+  "agent_presets": [
+    {
+      "id": "baseline",
+      "description": "Равномерный состав",
+      "agents": {
+        "Random": 10,
+        "Fundamentalist": 10,
+        "Chartist": 10,
+        "Universalist": 10
+      }
+    },
+    {
+      "id": "random_heavy",
+      "description": "Преобладание случайных трейдеров",
+      "agents": {
+        "Random": 20,
+        "Fundamentalist": 8,
+        "Chartist": 6,
+        "Universalist": 6
+      }
+    },
+    {
+      "id": "fundamental_heavy",
+      "description": "Преобладание фундаментальных трейдеров",
+      "agents": {
+        "Random": 8,
+        "Fundamentalist": 20,
+        "Chartist": 6,
+        "Universalist": 6
+      }
+    },
+    {
+      "id": "chartist_heavy",
+      "description": "Преобладание чартистов",
+      "agents": {
+        "Random": 8,
+        "Fundamentalist": 6,
+        "Chartist": 20,
+        "Universalist": 6
+      }
+    },
+    {
+      "id": "universalist_heavy",
+      "description": "Преобладание универсалистов",
+      "agents": {
+        "Random": 8,
+        "Fundamentalist": 6,
+        "Chartist": 6,
+        "Universalist": 20
+      }
+    }
+  ],
+  "price_shock": {
+    "t0": 200,
+    "min_percent": 0,
+    "max_percent": 0
+  },
+  "liquidity_shock": {
+    "t0": 250,
+    "fractions": [0.1, 0.3, 0.5, 0.7]
+  },
+  "save_plots": false,
+  "save_timeseries": false,
+  "timeseries_stride": 1,
+  "timeseries_minimal": true,
+  "repeats": 10000,
+  "base_seed": 123,
+  "resume_from_summary": true,
+  "show_repeats_progress": true,
+  "panic": {
+    "short_window": 10,
+    "baseline_window": 60,
+    "threshold": 2.5,
+    "consec": 2
+  },
+  "shock_detection": {
+    "W_ref": 60,
+    "W_stab": 40,
+    "consec_ok": 3,
+    "conf": 0.95,
+    "slope_th": 0.01,
+    "vol_relax": 1.25,
+    "band_k_sigma": 2.0,
+    "ema_alpha": 0.2,
+    "max_horizon": 2000,
+    "spread_relax": 1.5
+  },
+  "plots": []
+}

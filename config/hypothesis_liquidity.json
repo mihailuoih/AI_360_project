@@ -3,6 +3,11 @@
   "iterations": 600,
   "agent_cash": 1000,
   "agent_assets": 0,
+  "market_maker_endowment": {
+    "mm": {"cash": 500, "assets": 5},
+    "amm": {"cash": 500, "assets": 5},
+    "hfmm": {"cash": 500, "assets": 5}
+  },
   "exchange": {
     "price": 100,
     "std": 25,
