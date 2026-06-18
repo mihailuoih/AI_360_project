@@ -148,6 +148,8 @@ def default_agent_presets() -> List[Dict]:
 def price_levels(cfg: Dict) -> List[int]:
     if not cfg:
         return list(range(1, 11)) + list(range(15, 91, 5))
+    if "levels" in cfg:
+        return sorted({int(value) for value in cfg["levels"] if int(value) >= 0})
     min_percent = int(cfg.get("min_percent", 1))
     max_percent = int(cfg.get("max_percent", 90))
     if max_percent <= 0:
@@ -216,6 +218,27 @@ def validate_maker_endowment(cfg: Dict, mode: str) -> None:
             f"{mode.upper()} initial reserve ratio must match exchange price. "
             f"cash/assets={implied_price:.3f}, exchange.price={p0:.3f}"
         )
+
+
+def maker_endowment_variants(cfg: Dict) -> List[Dict]:
+    variants = cfg.get("market_maker_endowment_grid")
+    if not variants:
+        return [{"id": "", "market_maker_endowment": cfg.get("market_maker_endowment", {})}]
+    normalized = []
+    for idx, variant in enumerate(variants, start=1):
+        normalized.append(
+            {
+                "id": variant.get("id", f"maker_{idx}"),
+                "market_maker_endowment": variant.get("market_maker_endowment", {}),
+            }
+        )
+    return normalized
+
+
+def with_maker_endowment(cfg: Dict, variant: Dict) -> Dict:
+    scoped = dict(cfg)
+    scoped["market_maker_endowment"] = variant["market_maker_endowment"]
+    return scoped
 
 
 def build_traders(
@@ -443,6 +466,9 @@ def build_result_row(
         "scenario_type": scenario_meta["scenario_type"],
         "agent_preset": scenario_meta["agent_preset"],
         "mode": scenario_meta["mode"],
+        "maker_endowment_id": scenario_meta.get("maker_endowment_id", ""),
+        "maker_cash": scenario_meta.get("maker_cash"),
+        "maker_assets": scenario_meta.get("maker_assets"),
         "shock_value": scenario_meta["shock_value"],
         "shock_value_kind": scenario_meta["shock_value_kind"],
         "repeat_idx": scenario_meta["repeat_idx"],
@@ -505,6 +531,7 @@ def main(config_path: Path = None):
     liquidity_t0 = int(liquidity_cfg.get("t0", 250))
 
     modes = cfg.get("modes") or ["mm", "amm", "hfmm"]
+    maker_variants = maker_endowment_variants(cfg)
     price_values = price_levels(price_cfg)
     liquidity_values = liquidity_levels(liquidity_cfg)
 
@@ -518,53 +545,61 @@ def main(config_path: Path = None):
         print(f"Resume mode: found {len(done_run_ids)} completed runs in {RESULTS_PATH}", flush=True)
 
     tasks = []
-    for preset in presets:
-        preset_id = preset.get("id", "preset")
-        for mode in modes:
-            for percent in price_values:
-                # если шок = 0, шоковое событие не добавляем (базовый сценарий)
-                price_events = []
-                scenario_type = "price"
-                if percent > 0:
-                    price_events = [
-                        {
-                            "cls": FundamentalPriceShockRelative,
-                            "params": {"it": price_t0, "fraction": -percent / 100.0},
-                        }
-                    ]
-                else:
-                    scenario_type = "base"
-                tasks.append(
-                    {
-                        "scenario_type": scenario_type,
-                        "preset": preset,
-                        "mode": mode,
-                        "value": percent,
-                        "value_kind": "percent",
-                        "t0": price_t0,
-                        "event_specs": price_events,
-                        "scenario_id": f"price_{preset_id}_{mode}_{percent:02d}",
-                    }
-                )
-            for fraction in liquidity_values:
-                percent_value = int(round(fraction * 100))
-                tasks.append(
-                    {
-                        "scenario_type": "liquidity",
-                        "preset": preset,
-                        "mode": mode,
-                        "value": fraction,
-                        "value_kind": "fraction",
-                        "t0": liquidity_t0,
-                        "event_specs": [
+    for maker_variant in maker_variants:
+        maker_id = maker_variant.get("id", "")
+        scenario_prefix = f"_{maker_id}" if maker_id else ""
+        scoped_cfg = with_maker_endowment(cfg, maker_variant)
+        for preset in presets:
+            preset_id = preset.get("id", "preset")
+            for mode in modes:
+                for percent in price_values:
+                    # если шок = 0, шоковое событие не добавляем (базовый сценарий)
+                    price_events = []
+                    scenario_type = "price"
+                    if percent > 0:
+                        price_events = [
                             {
-                                "cls": AgentExitShock,
-                                "params": {"it": liquidity_t0, "fraction": fraction},
+                                "cls": FundamentalPriceShockRelative,
+                                "params": {"it": price_t0, "fraction": -percent / 100.0},
                             }
-                        ],
-                        "scenario_id": f"liquidity_{preset_id}_{mode}_{percent_value:02d}",
-                    }
-                )
+                        ]
+                    else:
+                        scenario_type = "base"
+                    tasks.append(
+                        {
+                            "scenario_type": scenario_type,
+                            "cfg": scoped_cfg,
+                            "maker_endowment_id": maker_id,
+                            "preset": preset,
+                            "mode": mode,
+                            "value": percent,
+                            "value_kind": "percent",
+                            "t0": price_t0,
+                            "event_specs": price_events,
+                            "scenario_id": f"price_{preset_id}{scenario_prefix}_{mode}_{percent:02d}",
+                        }
+                    )
+                for fraction in liquidity_values:
+                    percent_value = int(round(fraction * 100))
+                    tasks.append(
+                        {
+                            "scenario_type": "liquidity",
+                            "cfg": scoped_cfg,
+                            "maker_endowment_id": maker_id,
+                            "preset": preset,
+                            "mode": mode,
+                            "value": fraction,
+                            "value_kind": "fraction",
+                            "t0": liquidity_t0,
+                            "event_specs": [
+                                {
+                                    "cls": AgentExitShock,
+                                    "params": {"it": liquidity_t0, "fraction": fraction},
+                                }
+                            ],
+                            "scenario_id": f"liquidity_{preset_id}{scenario_prefix}_{mode}_{percent_value:02d}",
+                        }
+                    )
 
     scenario_counter = 0
 
@@ -574,11 +609,12 @@ def main(config_path: Path = None):
             flush=True,
         )
         scenario_counter = run_repeated(
-            cfg=cfg,
+            cfg=task["cfg"],
             preset=task["preset"],
             mode=task["mode"],
             scenario_type=task["scenario_type"],
             scenario_id=task["scenario_id"],
+            maker_endowment_id=task.get("maker_endowment_id", ""),
             event_specs=task["event_specs"],
             shock_value=task["value"],
             shock_value_kind=task["value_kind"],
@@ -599,6 +635,7 @@ def run_repeated(
     mode: str,
     scenario_type: str,
     scenario_id: str,
+    maker_endowment_id: str,
     event_specs: List[Dict],
     shock_value,
     shock_value_kind: str,
@@ -617,12 +654,16 @@ def run_repeated(
     local_header = csv_header
     for repeat_idx in iterator:
         seed = base_seed + scenario_counter * repeats + repeat_idx
+        maker_cash, maker_assets = maker_endowment(cfg, mode)
         scenario_meta = {
             "scenario_id": scenario_id,
             "scenario_run_id": f"{scenario_id}_run{repeat_idx}",
             "scenario_type": scenario_type,
             "agent_preset": preset.get("id", "preset"),
             "mode": mode,
+            "maker_endowment_id": maker_endowment_id,
+            "maker_cash": maker_cash,
+            "maker_assets": maker_assets,
             "shock_value": shock_value,
             "shock_value_kind": shock_value_kind,
             "repeat_idx": repeat_idx,

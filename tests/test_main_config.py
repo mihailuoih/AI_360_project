@@ -27,6 +27,39 @@ def test_maker_endowment_reads_mode_specific_config():
     assert main.maker_endowment(cfg, "amm") == (1000.0, 0)
 
 
+def test_maker_endowment_variants_support_grid_and_legacy_config():
+    legacy_cfg = {
+        "market_maker_endowment": {
+            "mm": {"cash": 500, "assets": 5},
+        }
+    }
+    assert main.maker_endowment_variants(legacy_cfg) == [
+        {
+            "id": "",
+            "market_maker_endowment": legacy_cfg["market_maker_endowment"],
+        }
+    ]
+
+    grid_cfg = {
+        "market_maker_endowment_grid": [
+            {
+                "id": "reserve_500_5",
+                "market_maker_endowment": {
+                    "amm": {"cash": 500, "assets": 5},
+                },
+            },
+            {
+                "id": "reserve_1000_10",
+                "market_maker_endowment": {
+                    "amm": {"cash": 1000, "assets": 10},
+                },
+            },
+        ]
+    }
+
+    assert main.maker_endowment_variants(grid_cfg) == grid_cfg["market_maker_endowment_grid"]
+
+
 def test_build_traders_keeps_retail_and_maker_endowments_separate():
     exchange = ExchangeAgent(price=100, std=0, volume=0)
     traders = main.build_traders(
