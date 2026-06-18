@@ -60,6 +60,26 @@ def test_maker_endowment_variants_support_grid_and_legacy_config():
     assert main.maker_endowment_variants(grid_cfg) == grid_cfg["market_maker_endowment_grid"]
 
 
+def test_shard_assignment_covers_runs_without_overlap():
+    repeats = 10
+    shards = 3
+    assigned = []
+
+    for scenario_counter in range(4):
+        for repeat_idx in range(1, repeats + 1):
+            owners = [
+                shard_index
+                for shard_index in range(shards)
+                if main.belongs_to_shard(scenario_counter, repeats, repeat_idx, shards, shard_index)
+            ]
+            assert len(owners) == 1
+            assigned.append((scenario_counter, repeat_idx, owners[0]))
+
+    assert len(assigned) == 40
+    counts = [sum(1 for _, _, owner in assigned if owner == shard_index) for shard_index in range(shards)]
+    assert max(counts) - min(counts) <= 1
+
+
 def test_build_traders_keeps_retail_and_maker_endowments_separate():
     exchange = ExchangeAgent(price=100, std=0, volume=0)
     traders = main.build_traders(

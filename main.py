@@ -117,7 +117,12 @@ def append_summary_row(path: Path, row: Dict, header: List[str] = None):
     return fieldnames
 
 
-def resolve_config_path() -> Path:
+def belongs_to_shard(scenario_counter: int, repeats: int, repeat_idx: int, shards: int, shard_index: int) -> bool:
+    run_ordinal = scenario_counter * repeats + repeat_idx - 1
+    return run_ordinal % shards == shard_index
+
+
+def parse_args():
     """
     Priority:
     1) CLI --config <path>
@@ -126,13 +131,28 @@ def resolve_config_path() -> Path:
     """
     parser = argparse.ArgumentParser(add_help=True)
     parser.add_argument("--config", type=str, default=None, help="Path to config JSON")
+    parser.add_argument("--output", type=str, default=None, help="Path to output summary CSV")
+    parser.add_argument(
+        "--resume-from",
+        action="append",
+        default=[],
+        help="Existing summary CSV to treat as completed runs. Can be passed multiple times.",
+    )
+    parser.add_argument("--shards", type=int, default=1, help="Number of parallel shards")
+    parser.add_argument("--shard-index", type=int, default=0, help="Current shard index, 0-based")
     args, _ = parser.parse_known_args()
     if args.config:
-        return Path(args.config)
-    env_cfg = os.environ.get("ABM_CONFIG")
-    if env_cfg:
-        return Path(env_cfg)
-    return CONFIG_PATH
+        args.config_path = Path(args.config)
+    else:
+        env_cfg = os.environ.get("ABM_CONFIG")
+        args.config_path = Path(env_cfg) if env_cfg else CONFIG_PATH
+    args.output_path = Path(args.output) if args.output else RESULTS_PATH
+    args.resume_paths = [Path(path) for path in args.resume_from]
+    if args.shards < 1:
+        raise ValueError("--shards must be >= 1")
+    if args.shard_index < 0 or args.shard_index >= args.shards:
+        raise ValueError("--shard-index must satisfy 0 <= shard-index < shards")
+    return args
 
 
 def default_agent_presets() -> List[Dict]:
@@ -519,9 +539,17 @@ def build_result_row(
     return row
 
 
-def main(config_path: Path = None):
+def main(
+    config_path: Path = None,
+    output_path: Path = RESULTS_PATH,
+    resume_paths: List[Path] = None,
+    shards: int = 1,
+    shard_index: int = 0,
+):
     cfg_path = config_path or CONFIG_PATH
     cfg = load_config(cfg_path)
+    output_path = Path(output_path)
+    resume_paths = list(resume_paths or [])
     presets = cfg.get("agent_presets") or default_agent_presets()
     price_cfg = cfg.get("price_shock", {})
     liquidity_cfg = cfg.get("liquidity_shock", {})
@@ -535,14 +563,25 @@ def main(config_path: Path = None):
     price_values = price_levels(price_cfg)
     liquidity_values = liquidity_levels(liquidity_cfg)
 
-    RESULTS_PATH.parent.mkdir(parents=True, exist_ok=True)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
     resume_from_summary = cfg.get("resume_from_summary", True)
-    if not resume_from_summary and RESULTS_PATH.exists():
-        RESULTS_PATH.unlink()
-    done_run_ids = load_done_run_ids(RESULTS_PATH) if resume_from_summary else set()
-    csv_header = read_csv_header(RESULTS_PATH)
+    if not resume_from_summary and output_path.exists():
+        output_path.unlink()
+    done_run_ids = set()
+    if resume_from_summary:
+        for path in resume_paths + [output_path]:
+            done_run_ids.update(load_done_run_ids(path))
+    csv_header = read_csv_header(output_path)
+    if csv_header is None:
+        for path in resume_paths:
+            csv_header = read_csv_header(path)
+            if csv_header is not None:
+                break
     if done_run_ids:
-        print(f"Resume mode: found {len(done_run_ids)} completed runs in {RESULTS_PATH}", flush=True)
+        sources = ", ".join(str(path) for path in resume_paths + [output_path])
+        print(f"Resume mode: found {len(done_run_ids)} completed runs in {sources}", flush=True)
+    if shards > 1:
+        print(f"Shard mode: shard {shard_index + 1}/{shards}, output={output_path}", flush=True)
 
     tasks = []
     for maker_variant in maker_variants:
@@ -623,10 +662,13 @@ def main(config_path: Path = None):
             base_seed=base_seed,
             scenario_counter=scenario_counter,
             done_run_ids=done_run_ids,
+            output_path=output_path,
+            shards=shards,
+            shard_index=shard_index,
             csv_header=csv_header,
         )
-        csv_header = read_csv_header(RESULTS_PATH)
-    print(f"Finished. Summary stored in {RESULTS_PATH}", flush=True)
+        csv_header = read_csv_header(output_path)
+    print(f"Finished. Summary stored in {output_path}", flush=True)
 
 
 def run_repeated(
@@ -644,6 +686,9 @@ def run_repeated(
     base_seed: int,
     scenario_counter: int,
     done_run_ids: set,
+    output_path: Path,
+    shards: int = 1,
+    shard_index: int = 0,
     csv_header: List[str] = None,
 ) -> int:
     show_progress = cfg.get("show_repeats_progress", True)
@@ -654,6 +699,8 @@ def run_repeated(
     local_header = csv_header
     for repeat_idx in iterator:
         seed = base_seed + scenario_counter * repeats + repeat_idx
+        if not belongs_to_shard(scenario_counter, repeats, repeat_idx, shards, shard_index):
+            continue
         maker_cash, maker_assets = maker_endowment(cfg, mode)
         scenario_meta = {
             "scenario_id": scenario_id,
@@ -673,10 +720,17 @@ def run_repeated(
         if scenario_meta["scenario_run_id"] in done_run_ids:
             continue
         row = run_simulation(cfg, preset, mode, scenario_meta, event_specs, seed)
-        local_header = append_summary_row(RESULTS_PATH, row, header=local_header)
+        local_header = append_summary_row(output_path, row, header=local_header)
         done_run_ids.add(scenario_meta["scenario_run_id"])
     return scenario_counter + 1
 
 
 if __name__ == "__main__":
-    main(resolve_config_path())
+    cli_args = parse_args()
+    main(
+        config_path=cli_args.config_path,
+        output_path=cli_args.output_path,
+        resume_paths=cli_args.resume_paths,
+        shards=cli_args.shards,
+        shard_index=cli_args.shard_index,
+    )
